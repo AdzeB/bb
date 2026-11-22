@@ -93,6 +93,7 @@ describe("ParentAvailability", () => {
     await expect(availability({ fetchImpl }).get()).resolves.toEqual({
       claude: true,
       codex: false,
+      antigravity: false,
     });
     expect(vi.mocked(fetchImpl).mock.calls[0]?.[0]).toBe(
       `${BASE_URL}/availability`,
@@ -116,6 +117,7 @@ describe("ParentAvailability", () => {
     await expect(client.get()).resolves.toEqual({
       claude: false,
       codex: false,
+      antigravity: false,
     });
     expect(onError).toHaveBeenCalled();
   });
@@ -127,6 +129,7 @@ describe("ParentAvailability", () => {
     await expect(availability({ fetchImpl }).get()).resolves.toEqual({
       claude: false,
       codex: false,
+      antigravity: false,
     });
   });
 
@@ -137,6 +140,7 @@ describe("ParentAvailability", () => {
     await expect(availability({ fetchImpl }).get()).resolves.toEqual({
       claude: false,
       codex: false,
+      antigravity: false,
     });
   });
 

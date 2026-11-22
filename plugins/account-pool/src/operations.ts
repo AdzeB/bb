@@ -18,6 +18,7 @@ import type {
 } from "./store.js";
 import type { ClaudeOAuthAccount } from "./oauth-login.js";
 import type { CodexDeviceAccount } from "./codex-device-login.js";
+import type { AntigravityProfileAccount } from "./antigravity-login.js";
 
 interface PoolHost {
   id: string;
@@ -42,7 +43,13 @@ interface OAuthLogin {
   codexAccountId: string | null;
   subscriptionType: string | null;
   rateLimitTier: string | null;
-  secret: Extract<AccountSecret, { kind: "oauth" }>;
+  secret: AccountSecret;
+}
+
+function providerDisplayName(provider: PoolProvider): string {
+  if (provider === "claude") return "Claude";
+  if (provider === "codex") return "Codex";
+  return "Antigravity";
 }
 
 function identityMismatch(account: Account, login: OAuthLogin): string | null {
@@ -84,6 +91,9 @@ export class PoolOperations {
     private readonly parentStatus: () => Promise<
       PoolStatus["parent"]
     > = async () => null,
+    private readonly onAccountRemoved: (
+      accountId: string,
+    ) => Promise<void> = async () => {},
   ) {}
 
   async add(input: AccountAddInput): Promise<Account> {
@@ -169,6 +179,40 @@ export class PoolOperations {
     return summary;
   }
 
+  async addAntigravityProfile(
+    authenticated: AntigravityProfileAccount,
+    target: LoginTarget,
+  ): Promise<Account> {
+    let nextRevision = 1;
+    if (target.kind === "relogin") {
+      try {
+        const existing = await this.accounts.readSecret(target.accountId);
+        if (existing.kind === "antigravity-profile") {
+          nextRevision = existing.revision + 1;
+        }
+      } catch {
+        nextRevision = 1;
+      }
+    }
+    return this.saveLogin(
+      {
+        provider: "antigravity",
+        label: authenticated.label,
+        email: authenticated.email,
+        accountUuid: null,
+        codexAccountId: null,
+        subscriptionType: null,
+        rateLimitTier: null,
+        secret: {
+          kind: "antigravity-profile",
+          tokenJson: authenticated.tokenJson,
+          revision: nextRevision,
+        },
+      },
+      target,
+    );
+  }
+
   private async saveLogin(
     login: OAuthLogin,
     target: LoginTarget,
@@ -225,7 +269,7 @@ export class PoolOperations {
     }
     if (account.provider !== provider) {
       throw new LoginTargetError(
-        `${account.label} is a ${account.provider === "claude" ? "Claude" : "Codex"} account.`,
+        `${account.label} is a ${providerDisplayName(account.provider)} account.`,
       );
     }
     if (account.kind !== "oauth") {
@@ -244,6 +288,7 @@ export class PoolOperations {
     const removed = await this.accounts.remove(id);
     if (removed) {
       this.quotas.remove(id);
+      await this.onAccountRemoved(id);
       this.onAccountsChanged();
     }
     return removed;
@@ -300,9 +345,10 @@ export class PoolOperations {
     await this.hubTokens.prune(hosts.map((host) => host.id));
     const status = await this.hub.status();
     const hostNames = new Map(hosts.map((host) => [host.id, host.name]));
-    const [claude, codex] = await Promise.all([
+    const [claude, codex, antigravity] = await Promise.all([
       this.routing.isProviderEnabled("claude"),
       this.routing.isProviderEnabled("codex"),
+      this.routing.isProviderEnabled("antigravity"),
     ]);
     return {
       ...status,
@@ -317,7 +363,7 @@ export class PoolOperations {
             ? null
             : (hostNames.get(account.lastUsedHostId) ?? null),
       })),
-      routing: { claude, codex },
+      routing: { claude, codex, antigravity },
       parent: await this.parentStatus(),
     };
   }

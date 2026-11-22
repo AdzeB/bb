@@ -37,13 +37,33 @@ export function usagePlan(
 }
 
 function accountKey(account: AccountSummary): string | null {
-  return account.provider === "codex"
-    ? account.codexAccountId
+  if (account.provider === "codex") {
+    return account.codexAccountId
       ? `openai:chatgpt:${account.codexAccountId}`
-      : null
-    : account.accountUuid
-      ? `anthropic:account:${account.accountUuid}`
       : null;
+  }
+  if (account.provider === "antigravity") {
+    return account.email
+      ? `google:antigravity:${account.email.toLowerCase()}`
+      : null;
+  }
+  return account.accountUuid
+    ? `anthropic:account:${account.accountUuid}`
+    : null;
+}
+
+function usageProviderId(provider: AccountSummary["provider"]): string {
+  if (provider === "claude") return "claude-code";
+  if (provider === "codex") return "codex";
+  return "antigravity-cli";
+}
+
+function usageProviderFallbackLabel(
+  provider: AccountSummary["provider"],
+): string {
+  if (provider === "claude") return "Claude Code";
+  if (provider === "codex") return "Codex";
+  return "Antigravity CLI";
 }
 
 async function subscriptionAccounts(
@@ -64,10 +84,9 @@ export function registerUsageSource(bb: BbPluginApi, hub: AccountPoolHub) {
           resources: accounts.map((account) => ({
             id: account.id,
             accountKey: accountKey(account),
-            providerId: account.provider === "claude" ? "claude-code" : "codex",
+            providerId: usageProviderId(account.provider),
             label:
-              account.email ??
-              (account.provider === "claude" ? "Claude Code" : "Codex"),
+              account.email ?? usageProviderFallbackLabel(account.provider),
             scope: { kind: "shared" as const },
           })),
         };
@@ -150,7 +169,7 @@ export function registerUsageSource(bb: BbPluginApi, hub: AccountPoolHub) {
           return {
             id: account.id,
             accountKey: accountKey(account),
-            providerId: account.provider === "claude" ? "claude-code" : "codex",
+            providerId: usageProviderId(account.provider),
             label: account.label,
             scope: { kind: "shared" },
             observedAt: account.observedAt,

@@ -52,7 +52,11 @@ export const accountPoolConfigSetInputSchema = z
   .strict();
 
 export const poolAvailabilitySchema = z
-  .object({ claude: z.boolean(), codex: z.boolean() })
+  .object({
+    claude: z.boolean(),
+    codex: z.boolean(),
+    antigravity: z.boolean().default(false),
+  })
   .strict();
 
 export type PoolAvailability = z.infer<typeof poolAvailabilitySchema>;
@@ -60,6 +64,7 @@ export type PoolAvailability = z.infer<typeof poolAvailabilitySchema>;
 export const UNAVAILABLE_POOL: PoolAvailability = {
   claude: false,
   codex: false,
+  antigravity: false,
 };
 
 export type AccountPoolConfigSetInput = z.infer<
@@ -71,7 +76,7 @@ export interface AccountPoolConfigController {
   set: (input: AccountPoolConfigSetInput) => Promise<AccountPoolConfig>;
 }
 
-export const providerSchema = z.enum(["claude", "codex"]);
+export const providerSchema = z.enum(["claude", "codex", "antigravity"]);
 export type PoolProvider = z.infer<typeof providerSchema>;
 export const accountKindSchema = z.enum(["oauth", "api-key"]);
 export const modelFamilySchema = z.enum([
@@ -168,9 +173,18 @@ export const apiKeySecretSchema = z
   })
   .strict();
 
+export const antigravityProfileSecretSchema = z
+  .object({
+    kind: z.literal("antigravity-profile"),
+    tokenJson: z.string().min(1),
+    revision: z.number().int().nonnegative().default(1),
+  })
+  .strict();
+
 export const accountSecretSchema = z.discriminatedUnion("kind", [
   oauthSecretSchema,
   apiKeySecretSchema,
+  antigravityProfileSecretSchema,
 ]);
 
 export type AccountSecret = z.infer<typeof accountSecretSchema>;
@@ -246,7 +260,13 @@ export const statusSchema = z
     accepting: z.boolean(),
     hosts: z.array(hubTokenSummarySchema),
     accounts: z.array(accountSummarySchema),
-    routing: z.object({ claude: z.boolean(), codex: z.boolean() }).strict(),
+    routing: z
+      .object({
+        claude: z.boolean(),
+        codex: z.boolean(),
+        antigravity: z.boolean().default(true),
+      })
+      .strict(),
     parent: z
       .object({
         baseUrl: z.string(),

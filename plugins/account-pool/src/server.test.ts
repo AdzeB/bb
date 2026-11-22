@@ -1346,7 +1346,7 @@ describe("Account Pool plugin", () => {
       }),
     ).resolves.toBeNull();
     expect(host.harness.inspection.needsConfigurationMessages).toEqual([
-      "Add and enable a Claude or Codex account with `bb pool account add`.",
+      "Add and enable a Claude, Codex, or Antigravity account with `bb pool account add`.",
     ]);
     const hello = helloResponse();
     expect(hello.status).toBe(200);
@@ -6325,7 +6325,11 @@ describe("Account Pool plugin", () => {
     const result = statusSchema.parse(
       await fixture.host.harness.behavior.callRpc("status.get", null),
     );
-    expect(result.routing).toEqual({ claude: false, codex: true });
+    expect(result.routing).toEqual({
+      claude: false,
+      codex: true,
+      antigravity: true,
+    });
   });
 
   it("records the selected account's last-use time and host", async () => {
@@ -8036,6 +8040,10 @@ describe("Account Pool nested proxy", () => {
       { headers: { "x-bb-account-pool-token": fixture.key } },
     );
     expect(allowed.status).toBe(200);
-    expect(await allowed.json()).toEqual({ claude: true, codex: false });
+    expect(await allowed.json()).toEqual({
+      claude: true,
+      codex: false,
+      antigravity: false,
+    });
   });
 });

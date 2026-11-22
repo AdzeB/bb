@@ -87,7 +87,10 @@ import { isNonImeKey } from "@/lib/ime-keyboard";
 
 type DialogState =
   | { kind: "account" | "priority" | "remove"; accountId: string }
-  | { kind: "claude-login" | "codex-login"; target: LoginTarget }
+  | {
+      kind: "claude-login" | "codex-login" | "antigravity-login";
+      target: LoginTarget;
+    }
   | { kind: "api-key" }
   | null;
 
@@ -125,6 +128,20 @@ const PROVIDERS: Array<{
     title: "Codex",
     description: "Codex threads route through these ChatGPT accounts.",
   },
+  {
+    id: "antigravity",
+    title: "Antigravity",
+    description:
+      "Antigravity CLI threads run with these isolated Google account profiles.",
+  },
+];
+
+const PROXY_PROVIDERS: ReadonlyArray<{
+  id: "claude" | "codex";
+  title: string;
+}> = [
+  { id: "claude", title: "Claude" },
+  { id: "codex", title: "Codex" },
 ];
 const FAMILY_LABELS: Record<ModelFamily, string> = {
   fable: "Fable 7 day",
@@ -169,13 +186,13 @@ function parentBannerBody(parent: NonNullable<PoolStatus["parent"]>): string {
   if (parent.mode !== "proxy") {
     return `This server was started from a thread on ${host}. Turn this on to send Claude and Codex requests to its pool instead of using the accounts below.`;
   }
-  const served = PROVIDERS.filter(
+  const served = PROXY_PROVIDERS.filter(
     (provider) => parent.availability[provider.id],
   ).map((provider) => provider.title);
   if (served.length === 0) {
     return `${host} has no accounts available right now, so nothing is being sent there. Requests fall back to each provider's own credentials.`;
   }
-  const missing = PROVIDERS.filter(
+  const missing = PROXY_PROVIDERS.filter(
     (provider) => !parent.availability[provider.id],
   ).map((provider) => provider.title);
   const routed = `${served.join(" and ")} requests are sent to the pool on ${host}.`;
@@ -327,7 +344,7 @@ type DisplayWindow = {
 };
 
 function displayWindows(account: AccountSummary): DisplayWindow[] {
-  if (account.provider === "codex")
+  if (account.provider === "codex" || account.provider === "antigravity")
     return account.limitWindows.map((window) => ({
       key: window.slot,
       short: windowShortLabel(window),
@@ -355,7 +372,7 @@ function quotaSlots(account: AccountSummary): QuotaSlot[] {
     utilization: window.quota?.utilization ?? null,
     status: window.quota?.status ?? null,
   }));
-  if (account.provider === "codex")
+  if (account.provider === "codex" || account.provider === "antigravity")
     return windows.length === 0
       ? [{ key: "primary", label: "LIMIT", utilization: null, status: null }]
       : windows;
@@ -606,12 +623,19 @@ function AddAccountMenu({
           <Icon name="UserRound" className="mt-0.5" />
           <span>
             <span className="block">
-              Sign in to {provider === "claude" ? "Claude" : "Codex"}
+              Sign in to{" "}
+              {provider === "claude"
+                ? "Claude"
+                : provider === "codex"
+                  ? "Codex"
+                  : "Antigravity"}
             </span>
             <span className="block text-xs text-muted-foreground">
               {provider === "claude"
                 ? "Opens claude.ai, paste the code back"
-                : "Opens ChatGPT with a device code"}
+                : provider === "codex"
+                  ? "Opens ChatGPT with a device code"
+                  : "Opens Google sign-in via agy, paste the code back"}
             </span>
           </span>
         </DropdownMenuItem>
@@ -1009,7 +1033,9 @@ function AccountPoolSettings() {
   }, [codexStep, loginDone, refresh, rpc]);
   const accounts = status?.accounts ?? [];
   const loginTarget =
-    dialog?.kind === "claude-login" || dialog?.kind === "codex-login"
+    dialog?.kind === "claude-login" ||
+    dialog?.kind === "codex-login" ||
+    dialog?.kind === "antigravity-login"
       ? dialog.target
       : null;
   const reloginId =
@@ -1126,12 +1152,22 @@ function AccountPoolSettings() {
       setCodexStep(await rpc.call("codexLogin.start", target));
     });
   }
+  async function startAntigravity(target: LoginTarget): Promise<void> {
+    setDialog({ kind: "antigravity-login", target });
+    setLoginDone(null);
+    await run("antigravity-login", async () => {
+      const started = await rpc.call("antigravityLogin.start", target);
+      setLoginStep(started);
+      setPastedCode("");
+    });
+  }
   async function startLogin(
     provider: PoolProvider,
     target: LoginTarget,
   ): Promise<void> {
     if (provider === "claude") await startClaude(target);
-    else await startCodex(target);
+    else if (provider === "codex") await startCodex(target);
+    else await startAntigravity(target);
   }
   async function chooseAdd(
     provider: PoolProvider,
@@ -1196,6 +1232,10 @@ function AccountPoolSettings() {
   function closeDialog(): void {
     if (dialog?.kind === "codex-login" && codexStep !== null)
       void rpc.call("codexLogin.cancel", { sessionId: codexStep.sessionId });
+    if (dialog?.kind === "antigravity-login" && loginStep !== null)
+      void rpc.call("antigravityLogin.cancel", {
+        sessionId: loginStep.sessionId,
+      });
     setDialog(null);
     setLoginStep(null);
     setCodexStep(null);
@@ -1263,9 +1303,9 @@ function AccountPoolSettings() {
               No accounts in the pool
             </h2>
             <p className="mx-auto mt-1 max-w-lg text-xs leading-relaxed text-muted-foreground">
-              Add a Claude or Codex account and threads on every machine will
-              route through it. Your machine&apos;s own login keeps working
-              until then.
+              Add a Claude, Codex, or Antigravity account and threads will route
+              through it. Your machine&apos;s own login keeps working until
+              then.
             </p>
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               <Button size="sm" onClick={() => void startClaude(NEW_LOGIN)}>
@@ -1273,6 +1313,12 @@ function AccountPoolSettings() {
               </Button>
               <Button size="sm" onClick={() => void startCodex(NEW_LOGIN)}>
                 Sign in to Codex
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void startAntigravity(NEW_LOGIN)}
+              >
+                Sign in to Antigravity
               </Button>
             </div>
           </div>
@@ -1678,6 +1724,38 @@ function AccountPoolSettings() {
             addAnother={() => void startCodex(NEW_LOGIN)}
           />
         ) : null}
+        {dialog?.kind === "antigravity-login" ? (
+          <LoginDialog
+            provider="antigravity"
+            relogin={reloginAccount}
+            loginStep={loginStep}
+            codexStep={null}
+            loginDone={loginDone}
+            pending={
+              pending.has("antigravity-login") ||
+              pending.has("complete-antigravity")
+            }
+            pastedCode={pastedCode}
+            countdown={0}
+            error={error}
+            close={closeDialog}
+            openUrl={navigate.openUrl}
+            setPastedCode={setPastedCode}
+            complete={() =>
+              void run("complete-antigravity", async () => {
+                if (loginStep === null) return;
+                const added = await rpc.call("antigravityLogin.complete", {
+                  sessionId: loginStep.sessionId,
+                  pasted: pastedCode,
+                });
+                setLoginDone(added.label);
+                setLoginStep(null);
+              })
+            }
+            restart={() => void startAntigravity(dialog.target)}
+            addAnother={() => void startAntigravity(NEW_LOGIN)}
+          />
+        ) : null}
       </Dialog>
     </div>
   );
@@ -1768,7 +1846,7 @@ function AccountDialog({
         <dt className="text-muted-foreground">Kind</dt>
         <dd>
           {account.kind === "oauth"
-            ? `OAuth · ${account.provider === "claude" ? "claude.ai" : "ChatGPT"}`
+            ? `OAuth · ${account.provider === "claude" ? "claude.ai" : account.provider === "codex" ? "ChatGPT" : "Antigravity"}`
             : "API key"}
         </dd>
         <dt className="text-muted-foreground">Priority</dt>
@@ -1850,11 +1928,16 @@ function LoginDialog({
   restart: () => void;
   addAnother: () => void;
 }) {
-  const name = provider === "claude" ? "Claude" : "Codex";
-  const url =
+  const name =
     provider === "claude"
-      ? loginStep?.authorizeUrl
-      : codexStep?.verificationUri;
+      ? "Claude"
+      : provider === "codex"
+        ? "Codex"
+        : "Antigravity";
+  const manualCodeFlow = provider === "claude" || provider === "antigravity";
+  const url = manualCodeFlow
+    ? loginStep?.authorizeUrl
+    : codexStep?.verificationUri;
   return (
     <DialogFrame
       title={
@@ -1874,7 +1957,7 @@ function LoginDialog({
             ) : null}
             <Button onClick={close}>Done</Button>
           </>
-        ) : provider === "claude" ? (
+        ) : manualCodeFlow ? (
           <>
             <span className="flex-1" />
             <Button
@@ -1898,8 +1981,8 @@ function LoginDialog({
           <div>
             <h3 className="text-base font-semibold">Connected {loginDone}</h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              {name} threads on every machine now route through this account.
-              Usage refreshes in the background.
+              {name} threads now route through this account. Usage refreshes in
+              the background.
             </p>
           </div>
         ) : (
@@ -1914,7 +1997,7 @@ function LoginDialog({
           </div>
         )
       ) : url === undefined ? (
-        provider === "codex" && error !== null ? (
+        error !== null ? (
           <LoginError message={error} restart={restart} />
         ) : (
           <p className="text-sm text-muted-foreground">Starting sign-in…</p>
@@ -1927,17 +2010,23 @@ function LoginDialog({
               : `Sign in as ${relogin.email ?? relogin.label}. `}
             {provider === "claude"
               ? "Sign in at claude.ai, then paste the code from the final page."
-              : "Open the verification page, sign in to ChatGPT, and enter this code."}
+              : provider === "antigravity"
+                ? "Sign in with Google, then paste the authorization code or callback URL."
+                : "Open the verification page, sign in to ChatGPT, and enter this code."}
           </p>
           {codexStep === null ? null : (
             <UserCodeBlock userCode={codexStep.userCode} />
           )}
           <AuthorizationUrlRow name={name} url={url} openUrl={openUrl} />
-          {provider === "claude" ? (
+          {manualCodeFlow ? (
             <>
               <Input
-                aria-label="Claude authorization code"
-                placeholder="Paste code#state here"
+                aria-label={`${name} authorization code`}
+                placeholder={
+                  provider === "claude"
+                    ? "Paste code#state here"
+                    : "Paste authorization code or callback URL"
+                }
                 value={pastedCode}
                 onChange={(event) => setPastedCode(event.target.value)}
               />

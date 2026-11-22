@@ -18,6 +18,7 @@ import {
   loginCompleteInputSchema,
   loginStartSchema,
   loginTargetSchema,
+  providerSchema,
   routedThreadStatusListSchema,
   statusSchema,
   tokenRotateInputSchema,
@@ -27,6 +28,7 @@ import {
 import type { PoolOperations } from "./operations.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
+import type { AntigravityLogin } from "./antigravity-login.js";
 
 export const accountPoolRpcContract = defineRpcContract({
   "account.add": {
@@ -64,7 +66,7 @@ export const accountPoolRpcContract = defineRpcContract({
   "routing.set": {
     input: routingSetInputSchema,
     output: z
-      .object({ provider: z.enum(["claude", "codex"]), enabled: z.boolean() })
+      .object({ provider: providerSchema, enabled: z.boolean() })
       .strict(),
   },
   "config.get": {
@@ -95,6 +97,18 @@ export const accountPoolRpcContract = defineRpcContract({
     input: codexLoginPollInputSchema,
     output: codexLoginCancelSchema,
   },
+  "antigravityLogin.start": {
+    input: loginTargetSchema,
+    output: loginStartSchema,
+  },
+  "antigravityLogin.complete": {
+    input: loginCompleteInputSchema,
+    output: accountSchema,
+  },
+  "antigravityLogin.cancel": {
+    input: codexLoginPollInputSchema,
+    output: codexLoginCancelSchema,
+  },
   "status.get": {
     input: z.null(),
     output: statusSchema,
@@ -117,6 +131,7 @@ export function createRpcHandlers(
   operations: PoolOperations,
   login: ClaudeOAuthLogin,
   codexLogin: CodexDeviceLogin,
+  antigravityLogin: AntigravityLogin,
   config: AccountPoolConfigController,
 ): PluginRpcHandlers<typeof accountPoolRpcContract> {
   return {
@@ -153,6 +168,11 @@ export function createRpcHandlers(
     "codexLogin.poll": (input) => codexLogin.poll(input),
     "codexLogin.cancel": (input) => ({
       cancelled: codexLogin.cancel(input),
+    }),
+    "antigravityLogin.start": (target) => antigravityLogin.start(target),
+    "antigravityLogin.complete": (input) => antigravityLogin.complete(input),
+    "antigravityLogin.cancel": (input) => ({
+      cancelled: antigravityLogin.cancel(input),
     }),
     "status.get": () => operations.status(),
     "status.routedThreads": () => operations.routedThreadsWithoutLocalLogin(),

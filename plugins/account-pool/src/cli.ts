@@ -34,6 +34,7 @@ import {
 import type { PoolOperations } from "./operations.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
+import type { AntigravityLogin } from "./antigravity-login.js";
 
 const DESCRIPTION = [
   "Accounts run sequentially by priority, then order added. The current fallback stays active until unavailable.",
@@ -49,7 +50,7 @@ const JSON_OPTION = {
 
 const PROVIDER_OPTION = {
   type: "enum",
-  values: ["claude", "codex"],
+  values: ["claude", "codex", "antigravity"],
   required: true,
   aliases: ["vendor"],
   description: "Provider this account belongs to",
@@ -194,6 +195,7 @@ function formatParent(parent: PoolStatus["parent"]): string {
     `mode: ${parent.mode}`,
     `parentServes.claude: ${parent.availability.claude}`,
     `parentServes.codex: ${parent.availability.codex}`,
+    `parentServes.antigravity: ${parent.availability.antigravity}`,
   ].join("\n");
 }
 
@@ -234,6 +236,7 @@ export function registerPoolCli(
   operations: PoolOperations,
   login: ClaudeOAuthLogin,
   codexLogin: CodexDeviceLogin,
+  antigravityLogin: AntigravityLogin,
   config: AccountPoolConfigController,
 ): void {
   async function startLogin(
@@ -259,6 +262,23 @@ export function registerPoolCli(
             ].join("\n")}\n`,
       };
     }
+    if (provider === "antigravity") {
+      const started = await antigravityLogin.start(target);
+      return {
+        exitCode: 0,
+        stdout: asJson
+          ? json({ ok: true, login: started })
+          : `${[
+              "Open this URL to sign in to Antigravity:",
+              started.authorizeUrl,
+              "",
+              `Session ID: ${started.sessionId}`,
+              "",
+              "After signing in, pipe the authorization code or callback URL into:",
+              `printf '%s\\n' \"$ANTIGRAVITY_AUTH_CODE\" | bb pool account login-complete --session ${started.sessionId} --code-stdin`,
+            ].join("\n")}\n`,
+      };
+    }
     const started = await login.start(target);
     return {
       exitCode: 0,
@@ -279,23 +299,23 @@ export function registerPoolCli(
     defineCli({
       name: "pool",
       summary:
-        "Manage Claude and Codex accounts and inspect the Account Pooler hub",
+        "Manage Claude, Codex, and Antigravity accounts and inspect the Account Pooler hub",
       description: DESCRIPTION,
       commands: {
         "account add": cliCommand({
           summary:
-            "Sign in to a Claude or Codex account, or add an Anthropic API key",
+            "Sign in to a Claude, Codex, or Antigravity account, or add an Anthropic API key",
           description:
-            "--login prints the browser or device step and exits; finish it with `bb pool account login-complete` (Claude) or `bb pool account login-poll` (Codex).\nThe pool keeps its own login, separate from this machine's Claude Code or Codex login, so neither signs the other out.",
+            "--login prints the browser or device step and exits; finish it with `bb pool account login-complete` (Claude or Antigravity) or `bb pool account login-poll` (Codex).\nThe pool keeps its own login, separate from this machine's Claude Code, Codex, or Antigravity login, so neither signs the other out.",
           unexpectedPositionalHint:
-            "the provider belongs in --provider <claude|codex>, not a bare argument",
+            "the provider belongs in --provider <claude|codex|antigravity>, not a bare argument",
           options: {
             provider: PROVIDER_OPTION,
             login: {
               type: "boolean",
               aliases: ["signin", "sign-in"],
               description:
-                "Start a browser (Claude) or device-code (Codex) login and print the next command",
+                "Start a browser (Claude, Antigravity) or device-code (Codex) login and print the next command",
             },
             "api-key": {
               type: "string",
@@ -438,9 +458,10 @@ export function registerPoolCli(
           },
         }),
         "account login-complete": cliCommand({
-          summary: "Complete a Claude browser login with its manual code",
+          summary:
+            "Complete a Claude or Antigravity browser login with its manual code",
           description:
-            "Pipe the code the final login page shows:\n  printf '%s\\n' \"$CLAUDE_AUTH_CODE\" | bb pool account login-complete --session <id> --code-stdin",
+            "Pipe the code the final login page shows:\n  printf '%s\\n' \"$AUTH_CODE\" | bb pool account login-complete --session <id> --code-stdin",
           options: {
             session: SESSION_OPTION,
             code: {
@@ -450,7 +471,7 @@ export function registerPoolCli(
               stdin: true,
               aliases: ["pasted", "auth-code"],
               description:
-                "Manual callback code from the final login page. Unsafe: exposes the code in process arguments",
+                "Manual callback code or URL from the final login page. Unsafe: exposes the code in process arguments",
             },
             json: JSON_OPTION,
           },
@@ -459,7 +480,9 @@ export function registerPoolCli(
               sessionId: input.options.session,
               pasted: input.options.code,
             });
-            const account = await login.complete(parsed);
+            const account = antigravityLogin.hasSession(parsed.sessionId)
+              ? await antigravityLogin.complete(parsed)
+              : await login.complete(parsed);
             return {
               exitCode: 0,
               stdout: input.options.json
@@ -596,7 +619,7 @@ export function registerPoolCli(
           positionals: [
             {
               name: "provider",
-              description: "claude or codex",
+              description: "claude, codex, or antigravity",
               required: true,
             },
             {
@@ -677,7 +700,7 @@ export function registerPoolCli(
           positionals: [
             {
               name: "provider",
-              description: "claude or codex",
+              description: "claude, codex, or antigravity",
               required: true,
             },
           ],

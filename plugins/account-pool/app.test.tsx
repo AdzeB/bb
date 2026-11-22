@@ -112,7 +112,7 @@ function status(accounts: AccountSummary[] = [account()]): PoolStatus {
       { hostId: "host-one", hostName: "bee", mintedAt: 1, lastUsedAt: 2 },
     ],
     accounts,
-    routing: { claude: true, codex: true },
+    routing: { claude: true, codex: true, antigravity: true },
     parent: null,
   };
 }
@@ -174,7 +174,7 @@ describe("Account Pool parent banner", () => {
     const slot = renderWithParent({
       baseUrl: PARENT_URL,
       mode: "isolate",
-      availability: { claude: true, codex: true },
+      availability: { claude: true, codex: true, antigravity: false },
     });
     expect(
       await slot.findByText("Parent Account Pooler available"),
@@ -189,7 +189,7 @@ describe("Account Pool parent banner", () => {
     const slot = renderWithParent({
       baseUrl: PARENT_URL,
       mode: "proxy",
-      availability: { claude: true, codex: true },
+      availability: { claude: true, codex: true, antigravity: false },
     });
     expect(
       await slot.findByText("Using the parent Account Pooler"),
@@ -205,7 +205,7 @@ describe("Account Pool parent banner", () => {
     const slot = renderWithParent({
       baseUrl: PARENT_URL,
       mode: "proxy",
-      availability: { claude: true, codex: false },
+      availability: { claude: true, codex: false, antigravity: false },
     });
     expect(
       await slot.findByText(
@@ -218,7 +218,7 @@ describe("Account Pool parent banner", () => {
     const slot = renderWithParent({
       baseUrl: PARENT_URL,
       mode: "proxy",
-      availability: { claude: false, codex: false },
+      availability: { claude: false, codex: false, antigravity: false },
     });
     expect(
       await slot.findByText(/has no accounts available right now/),
@@ -230,7 +230,9 @@ describe("Account Pool settings", () => {
   it("renders cached accounts as refreshing until live status arrives, then caches it", async () => {
     window.localStorage.setItem(
       STATUS_CACHE_KEY,
-      JSON.stringify(status([account({ limitWindows: [claudeWindow("primary", 0.21)] })])),
+      JSON.stringify(
+        status([account({ limitWindows: [claudeWindow("primary", 0.21)] })]),
+      ),
     );
     const live = deferred<PoolStatus>();
     const slot = render([], { "status.get": () => live.promise });
@@ -240,7 +242,9 @@ describe("Account Pool settings", () => {
     expect(slot.getByText(/· refreshing…$/)).toBeTruthy();
     expect(slot.queryByText("Loading…")).toBeNull();
     expect(slot.queryByText("No accounts in the pool")).toBeNull();
-    live.resolve(status([account({ limitWindows: [claudeWindow("primary", 0.6)] })]));
+    live.resolve(
+      status([account({ limitWindows: [claudeWindow("primary", 0.6)] })]),
+    );
     expect(await slot.findByText("60%")).toBeTruthy();
     expect(slot.queryByText("refreshing usage…")).toBeNull();
     expect(slot.queryByText(/· refreshing…$/)).toBeNull();
@@ -254,7 +258,7 @@ describe("Account Pool settings", () => {
     window.localStorage.setItem(STATUS_CACHE_KEY, '{"accounts":"nope"}');
     const live = deferred<PoolStatus>();
     const slot = render([], { "status.get": () => live.promise });
-    expect(slot.getAllByText("Loading…")).toHaveLength(2);
+    expect(slot.getAllByText("Loading…")).toHaveLength(3);
     live.resolve(status());
     expect(await slot.findByText("person@example.com")).toBeTruthy();
   });
@@ -907,4 +911,42 @@ describe("Account Pool settings", () => {
       ).toEqual(["Reorder First", "Reorder Second"]);
     },
   );
+
+  it("renders Antigravity accounts and completes Antigravity Google sign-in", async () => {
+    const slot = render([], {
+      "antigravityLogin.start": () => ({
+        sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        authorizeUrl: "https://accounts.google.com/o/oauth2/auth?state=test",
+      }),
+      "antigravityLogin.complete": () => ({
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        provider: "antigravity",
+        kind: "oauth",
+        label: "dev@example.com",
+        email: "dev@example.com",
+        accountUuid: null,
+        subscriptionType: null,
+        rateLimitTier: null,
+        enabled: true,
+        priority: 100,
+        createdAt: 1,
+        lastUsedAt: null,
+        lastUsedHostId: null,
+      }),
+    });
+    const signInButton = await slot.findByRole("button", {
+      name: "Sign in to Antigravity",
+    });
+    fireEvent.click(signInButton);
+    const urlInput = await slot.findByLabelText(
+      "Antigravity authorization URL",
+    );
+    expect((urlInput as HTMLInputElement).value).toContain(
+      "accounts.google.com",
+    );
+    const codeInput = slot.getByLabelText("Antigravity authorization code");
+    fireEvent.change(codeInput, { target: { value: "google-auth-code" } });
+    fireEvent.click(slot.getByRole("button", { name: "Complete" }));
+    expect(await slot.findByText("Connected dev@example.com")).toBeTruthy();
+  });
 });

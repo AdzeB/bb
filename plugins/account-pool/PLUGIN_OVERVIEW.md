@@ -1,10 +1,10 @@
-Keep a Claude Code or Codex thread running when one account hits its limit. The Account Pooler puts every account you own behind a local hub and picks the account for each request.
+Keep a Claude Code, Codex, or Antigravity CLI thread running when one account hits its limit. The Account Pooler puts Claude and Codex accounts behind a local hub and manages isolated Google account profiles for Antigravity CLI, picking the next account with headroom automatically.
 
 ## What you get
 
-- Claude and Codex accounts added by signing in (browser or device code) or with an Anthropic API key. Each holds its own login, so the pool never signs this machine's Claude Code or Codex out; **Sign in again** renews one in place.
+- Claude, Codex, and Antigravity accounts added by signing in (browser or device code) or with an Anthropic API key. Each holds its own login, so the pool never signs this machine's Claude Code, Codex, or Antigravity CLI out; **Sign in again** renews one in place.
 - Accounts run one after another in priority order, with ties following the order added. New conversations stay on the current fallback even when an earlier account recovers. Existing conversations keep their account until the provider refuses it.
-- Drag handles (or Space and arrow keys) set the account order within each provider in settings, as does `bb pool account reorder <claude|codex> <id>...`.
+- Drag handles (or Space and arrow keys) set the account order within each provider in settings, as does `bb pool account reorder <claude|codex|antigravity> <id>...`.
 - Live limit windows per account and model family in settings, and the same numbers from `bb pool status`.
 - A routing switch per provider and a bypass per thread, so one thread can go straight to its own credentials.
 

@@ -72,7 +72,7 @@ export function createClaudeAdapter(options: {
       );
       if (secret.kind === "oauth") {
         headers.set("authorization", `Bearer ${secret.accessToken}`);
-      } else {
+      } else if (secret.kind === "api-key") {
         headers.set("x-api-key", secret.apiKey);
       }
       return headers;

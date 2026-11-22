@@ -36,6 +36,16 @@ import { accountPoolRpcContract, createRpcHandlers } from "./rpc.js";
 import { ClaudeOAuthLogin } from "./oauth-login.js";
 import { CodexDeviceLogin } from "./codex-device-login.js";
 import {
+  ANTIGRAVITY_APP_DATA_DIR,
+  ANTIGRAVITY_APP_DATA_DIR_ENV,
+  ANTIGRAVITY_GEMINI_DIR_ENV,
+  AntigravityLogin,
+  ensureAntigravityProfileDir,
+  removeAntigravityProfileDir,
+  type SpawnAntigravityLogin,
+} from "./antigravity-login.js";
+import type { ExecAntigravityUsage } from "./antigravity-adapter.js";
+import {
   ACCOUNT_POOL_ACCOUNTS_CHANGED,
   ACCOUNT_POOL_CONFIG_CHANGED,
 } from "./realtime.js";
@@ -65,6 +75,9 @@ export interface AccountPoolPluginOptions {
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
   codexAuthBaseUrl?: string;
+  agyCommand?: string;
+  spawnAntigravityLogin?: SpawnAntigravityLogin;
+  execAntigravityUsage?: ExecAntigravityUsage;
 }
 
 const DISPOSE_INSPECTION_TIMEOUT_MS = 2_000;
@@ -80,6 +93,7 @@ const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
     "BB_CLAUDE_MODELS_URL",
   ],
   codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
+  antigravity: [ANTIGRAVITY_GEMINI_DIR_ENV, ANTIGRAVITY_APP_DATA_DIR_ENV],
 };
 
 interface PoolEnvEntry {
@@ -154,6 +168,7 @@ export function createAccountPoolPlugin(
     const transport =
       options.fetch === undefined ? createUpstreamTransport() : null;
     const upstreamFetch = options.fetch ?? transport?.fetch;
+    const antigravityProfilesDir = path.join(secretDir, "antigravity-profiles");
     const hub = createHub({
       accounts,
       quotas,
@@ -167,6 +182,10 @@ export function createAccountPoolPlugin(
       codexUsageUrl: options.codexUsageUrl,
       usageUrl: options.usageUrl,
       profileUrl: options.oauthProfileUrl,
+      antigravityProfilesDir,
+      agyCommand: options.agyCommand,
+      antigravityEnv: options.env,
+      execAntigravityUsage: options.execAntigravityUsage,
       drainTimeoutMs: options.drainTimeoutMs,
       maxAffinityBindings: options.maxAffinityBindings,
       getParentRoute: proxyingParent,
@@ -224,6 +243,8 @@ export function createAccountPoolPlugin(
       () => bb.realtime.publish(ACCOUNT_POOL_ACCOUNTS_CHANGED, {}),
       (accountId) => hub.refreshUsage(accountId, true),
       parentStatus,
+      (accountId) =>
+        removeAntigravityProfileDir(antigravityProfilesDir, accountId),
     );
     const login = new ClaudeOAuthLogin({
       fetch: upstreamFetch,
@@ -245,12 +266,23 @@ export function createAccountPoolPlugin(
       saveLogin: (authenticated, target) =>
         operations.addCodexOAuth(authenticated, target),
     });
+    const antigravityLogin = new AntigravityLogin({
+      profilesDir: antigravityProfilesDir,
+      agyCommand: options.agyCommand,
+      env: options.env,
+      now,
+      spawnLogin: options.spawnAntigravityLogin,
+      validateTarget: (target) =>
+        operations.validateLoginTarget("antigravity", target),
+      saveLogin: (authenticated, target) =>
+        operations.addAntigravityProfile(authenticated, target),
+    });
     if ((await accounts.list()).every((account) => !account.enabled)) {
       bb.status.needsConfiguration(
-        "Add and enable a Claude or Codex account with `bb pool account add`.",
+        "Add and enable a Claude, Codex, or Antigravity account with `bb pool account add`.",
       );
     }
-    const routedProviderSchema = z.enum(["claude", "codex"]);
+    const routedProviderSchema = z.enum(["claude", "codex", "antigravity"]);
     const failedRequestSchema = z.object({
       requestId: z.string(),
       execution: z.object({ model: z.string() }),
@@ -289,9 +321,22 @@ export function createAccountPoolPlugin(
     registerUsageSource(bb, hub);
     bb.rpc.register(
       accountPoolRpcContract,
-      createRpcHandlers(operations, login, codexLogin, config),
+      createRpcHandlers(
+        operations,
+        login,
+        codexLogin,
+        antigravityLogin,
+        config,
+      ),
     );
-    registerPoolCli(bb, operations, login, codexLogin, config);
+    registerPoolCli(
+      bb,
+      operations,
+      login,
+      codexLogin,
+      antigravityLogin,
+      config,
+    );
     const canServe = async (provider: PoolProvider): Promise<boolean> => {
       if (!(await operations.isRoutingEnabled(provider))) return false;
       if (proxyingParent() !== null && availability !== null) {
@@ -425,8 +470,98 @@ export function createAccountPoolPlugin(
     bb.providers.experimental_contributeEnvHealth("codex", () =>
       proxiedHealth("codex"),
     );
+    const antigravityThreadAccounts = new Map<string, string>();
+    bb.providers.experimental_contributeEnv(
+      "antigravity-cli",
+      async (context) => {
+        const { threadId, hostId } = context;
+        const bypassed =
+          threadId !== null && (await routing.isBypassed(threadId));
+        if (bypassed || !(await operations.isRoutingEnabled("antigravity"))) {
+          if (threadId !== null) {
+            antigravityThreadAccounts.delete(threadId);
+            await bb.storage.kv.delete(`retry-route:${threadId}`);
+          }
+          return parentPool === null ? [] : neutralized("antigravity");
+        }
+        if (proxyingParent() !== null) {
+          return [];
+        }
+        const selected = await hub.selectProfileAccount(
+          "antigravity",
+          hostId,
+          threadId,
+        );
+        if (selected === null) {
+          if (threadId !== null) {
+            antigravityThreadAccounts.delete(threadId);
+            await bb.storage.kv.delete(`retry-route:${threadId}`);
+          }
+          return parentPool === null ? [] : neutralized("antigravity");
+        }
+        let secret;
+        try {
+          secret = await accounts.readSecret(selected.id);
+        } catch {
+          return parentPool === null ? [] : neutralized("antigravity");
+        }
+        if (secret.kind !== "antigravity-profile") {
+          return parentPool === null ? [] : neutralized("antigravity");
+        }
+        const profile = await ensureAntigravityProfileDir(
+          antigravityProfilesDir,
+          selected.id,
+          secret.tokenJson,
+          secret.revision,
+        );
+        if (threadId !== null) {
+          antigravityThreadAccounts.set(threadId, selected.id);
+          await bb.storage.kv.set(`retry-route:${threadId}`, "antigravity");
+        }
+        return [
+          {
+            name: ANTIGRAVITY_GEMINI_DIR_ENV,
+            value: profile.geminiDir,
+            reason:
+              "Isolated Antigravity profile directory managed by the Account Pooler",
+          },
+          {
+            name: ANTIGRAVITY_APP_DATA_DIR_ENV,
+            value: ANTIGRAVITY_APP_DATA_DIR,
+            reason: "Antigravity app data directory for the pooled profile",
+          },
+        ];
+      },
+    );
+    bb.providers.experimental_contributeEnvHealth(
+      "antigravity-cli",
+      async () =>
+        (await canServe("antigravity"))
+          ? {
+              label: "Pooled",
+              statusMessage:
+                "Credentials are managed by isolated Account Pooler profiles.",
+            }
+          : null,
+    );
+    const refreshAntigravityThreadAccount = (
+      thread: { id: string; providerId: string },
+      force: boolean,
+    ) => {
+      if (thread.providerId !== "antigravity-cli") return;
+      const accountId = antigravityThreadAccounts.get(thread.id);
+      if (accountId === undefined) return;
+      void hub.refreshUsage(accountId, force).catch(() => undefined);
+    };
+    bb.events.on("thread.idle", ({ thread }) => {
+      refreshAntigravityThreadAccount(thread, false);
+    });
+    bb.events.on("thread.failed", ({ thread }) => {
+      refreshAntigravityThreadAccount(thread, true);
+    });
     bb.onDispose(async () => {
       codexLogin.dispose();
+      antigravityLogin.dispose();
       let timer: ReturnType<typeof setTimeout> | null = null;
       try {
         const inspection = inspectDisableState(bb, operations);
@@ -497,6 +632,7 @@ export function createAccountPoolPlugin(
           poolAvailabilitySchema.parse({
             claude: await canServe("claude"),
             codex: await canServe("codex"),
+            antigravity: await canServe("antigravity"),
           }),
         );
       },

@@ -19,6 +19,10 @@ import {
   DEFAULT_CODEX_REFRESH_URL,
   DEFAULT_CODEX_USAGE_URL,
 } from "./codex-adapter.js";
+import {
+  createAntigravityAdapter,
+  type ExecAntigravityUsage,
+} from "./antigravity-adapter.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import {
   OAuthRefreshError,
@@ -1339,6 +1343,100 @@ export class AccountPoolHub {
     });
   }
 
+  pinnedProfileAccountId(
+    provider: PoolProvider,
+    hostId: string,
+    threadId: string,
+  ): string | null {
+    const key = JSON.stringify([provider, hostId, threadId]);
+    const binding = this.affinityBindings.get(key);
+    return binding?.accountId ?? null;
+  }
+
+  async selectProfileAccount(
+    provider: PoolProvider,
+    hostId: string,
+    threadId: string | null,
+  ): Promise<Account | null> {
+    const now = this.options.now();
+    const threshold = this.options.getSettings().switchThreshold;
+    const allAccounts = (await this.options.accounts.list())
+      .filter((account) => account.provider === provider && account.enabled)
+      .sort((left, right) => left.priority - right.priority);
+    const usable: Array<{ account: Account; quota: AccountQuota }> = [];
+    for (const account of allAccounts) {
+      try {
+        await this.options.accounts.readSecret(account.id);
+      } catch {
+        continue;
+      }
+      const quota = this.options.quotas.get(account.id);
+      if (
+        quota.error !== null ||
+        isUsageRestricted(quota, now) ||
+        isQuotaExhausted(quota, null, now)
+      ) {
+        continue;
+      }
+      if (quota.heldUntil !== null && quota.heldUntil > now) continue;
+      usable.push({ account, quota });
+    }
+    if (usable.length === 0) return null;
+
+    const belowThreshold = usable.filter(
+      ({ quota }) => !isPastThreshold(quota, null, threshold, now),
+    );
+    const preferred = belowThreshold.length > 0 ? belowThreshold : usable;
+
+    const affinityKey =
+      threadId === null ? null : JSON.stringify([provider, hostId, threadId]);
+    const existingBinding =
+      affinityKey === null ? undefined : this.affinityBindings.get(affinityKey);
+    const pinned =
+      existingBinding !== undefined
+        ? usable.find(({ account }) => account.id === existingBinding.accountId)
+        : undefined;
+
+    const active = this.activeAccounts.get(provider);
+    const activeCandidate =
+      active === undefined
+        ? undefined
+        : preferred.find(({ account }) => account.id === active.accountId);
+
+    const chosen = pinned ?? activeCandidate ?? preferred[0];
+    if (chosen === undefined) return null;
+
+    if (affinityKey !== null) {
+      const updatedBinding: AccountBinding = {
+        accountId: chosen.account.id,
+        lastUsedAt: now,
+      };
+      this.options.affinity.putBinding(affinityKey, updatedBinding);
+      this.affinityBindings.delete(affinityKey);
+      this.affinityBindings.set(affinityKey, updatedBinding);
+      while (this.affinityBindings.size > this.options.maxAffinityBindings) {
+        const oldest = this.affinityBindings.keys().next();
+        if (!oldest.done) {
+          this.affinityBindings.delete(oldest.value);
+          this.options.affinity.removeBinding(oldest.value);
+        }
+      }
+    }
+    if (pinned === undefined) {
+      this.options.affinity.putActiveAccount(provider, chosen.account.id);
+      this.activeAccounts.set(provider, { accountId: chosen.account.id });
+    }
+    if (threadId !== null) {
+      const changed = await this.options.accounts.recordUsed(
+        chosen.account.id,
+        now,
+        hostId,
+      );
+      if (changed) this.options.onAccountsChanged();
+    }
+    return chosen.account;
+  }
+
   async retryAvailability(
     provider: PoolProvider,
     family: ModelFamily,
@@ -1506,6 +1604,10 @@ export function createHub(options: {
   codexUsageUrl?: string;
   usageUrl?: string;
   profileUrl?: string;
+  antigravityProfilesDir?: string;
+  agyCommand?: string;
+  antigravityEnv?: NodeJS.ProcessEnv;
+  execAntigravityUsage?: ExecAntigravityUsage;
   drainTimeoutMs?: number;
   maxAffinityBindings?: number;
   getParentRoute?: () => ParentPool | null;
@@ -1513,7 +1615,7 @@ export function createHub(options: {
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
 }): AccountPoolHub {
-  const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
+  const adapters = new Map<PoolProvider, ProviderAdapter>([
     [
       "claude",
       createClaudeAdapter({
@@ -1530,6 +1632,17 @@ export function createHub(options: {
       }),
     ],
   ]);
+  if (options.antigravityProfilesDir !== undefined) {
+    adapters.set(
+      "antigravity",
+      createAntigravityAdapter({
+        profilesDir: options.antigravityProfilesDir,
+        agyCommand: options.agyCommand,
+        env: options.antigravityEnv,
+        execUsage: options.execAntigravityUsage,
+      }),
+    );
+  }
   return new AccountPoolHub({
     accounts: options.accounts,
     quotas: options.quotas,
